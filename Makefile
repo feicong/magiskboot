@@ -49,7 +49,7 @@ override STRIP_CMD ?= $(CROSS_COMPILE)strip
 ifeq ($(SVB_MINGW),1)
 override STRIPFLAGS ?= --strip-all -R .comment -R .gnu.version --strip-unneeded
 else
-override STRIPFLAGS ?= -x // macOS compatible strip flag
+override STRIPFLAGS ?= -x
 endif
 override AR := $(CROSS_COMPILE)ar
 override ARFLAGS := rcs
