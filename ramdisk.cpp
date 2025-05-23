@@ -1,3 +1,7 @@
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h> // For R_OK, access
+
 #include <base.hpp>
 
 #include "cpio.hpp"

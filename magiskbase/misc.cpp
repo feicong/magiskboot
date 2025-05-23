@@ -2,17 +2,29 @@
 #include <fcntl.h>
 #include <pwd.h>
 #include <unistd.h>
+#include <signal.h>
 #include <random>
 #include <string>
 
 #include <base.hpp>
 
+// For environ on macOS if not exposed by unistd.h directly
+#if defined(__APPLE__)
+extern char **environ;
+#endif
+
 using namespace std;
 
 #ifndef SVB_WIN32
-#include <sys/prctl.h>
-#include <sys/sysmacros.h>
-#include <syscall.h>
+
+#if defined(__linux__)
+#include <sys/prctl.h>     // For prctl
+#include <sys/sysmacros.h> // For makedev, major, minor (Linux specific location)
+#endif
+// macOS has <sys/syscall.h> for syscall numbers like SYS_gettid, but not for setns directly.
+// setns itself is Linux-specific. The xsetns wrapper uses syscall(SYS_setns, ...).
+// If xsetns is used, it will need to be guarded for Linux.
+#include <sys/syscall.h> 
 #include <sys/wait.h>
 
 int fork_dont_care() {
@@ -25,6 +37,7 @@ int fork_dont_care() {
     return 0;
 }
 
+#if defined(__linux__)
 int fork_no_orphan() {
     int pid = xfork();
     if (pid)
@@ -35,14 +48,37 @@ int fork_no_orphan() {
     return 0;
 }
 
+static char *argv0_misc_linux;
+static size_t name_len_misc_linux;
+void init_argv0(int argc, char **argv) {
+    argv0_misc_linux = argv[0];
+    name_len_misc_linux = (argv[argc - 1] - argv[0]) + strlen(argv[argc - 1]) + 1;
+}
+
+void set_nice_name(const char *name) {
+    if (argv0_misc_linux) {
+        memset(argv0_misc_linux, 0, name_len_misc_linux);
+        strlcpy(argv0_misc_linux, name, name_len_misc_linux);
+    }
+    prctl(PR_SET_NAME, name);
+}
+#endif
+
 int gen_rand_str(char *buf, int len, bool varlen) {
     constexpr char ALPHANUM[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     static std::mt19937 gen([]{
-        if (access("/dev/urandom", F_OK) != 0)
+        if (access("/dev/urandom", F_OK) != 0) {
+#if defined(__linux__)
             mknod("/dev/urandom", 0600 | S_IFCHR, makedev(1, 9));
+#else
+            // On macOS, /dev/urandom should exist. If not, this is a deeper issue.
+            // Consider alternative random source or error if /dev/urandom is critical and absent.
+#endif
+        }
         int fd = xopen("/dev/urandom", O_RDONLY | O_CLOEXEC);
         unsigned seed;
         xxread(fd, &seed, sizeof(seed));
+        close(fd);
         return seed;
     }());
     std::uniform_int_distribution<int> dist(0, sizeof(ALPHANUM) - 2);
@@ -119,19 +155,6 @@ int new_daemon_thread(thread_entry entry, void *arg) {
     return xpthread_create(&thread, &attr, entry, arg);
 }
 
-static char *argv0;
-static size_t name_len;
-void init_argv0(int argc, char **argv) {
-    argv0 = argv[0];
-    name_len = (argv[argc - 1] - argv[0]) + strlen(argv[argc - 1]) + 1;
-}
-
-void set_nice_name(const char *name) {
-    memset(argv0, 0, name_len);
-    strlcpy(argv0, name, name_len);
-    prctl(PR_SET_NAME, name);
-}
-
 /*
  * Bionic's atoi runs through strtol().
  * Use our own implementation for faster conversion.
@@ -165,6 +188,7 @@ uint32_t binary_gcd(uint32_t u, uint32_t v) {
     return u << shift;
 }
 #ifndef SVB_WIN32
+#if defined(__linux__)
 int switch_mnt_ns(int pid) {
     char mnt[32];
     snprintf(mnt, sizeof(mnt), "/proc/%d/ns/mnt", pid);
@@ -178,6 +202,7 @@ int switch_mnt_ns(int pid) {
     close(fd);
     return ret;
 }
+#endif
 #endif
 string &replace_all(string &str, string_view from, string_view to) {
     size_t pos = 0;

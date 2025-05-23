@@ -2,6 +2,9 @@
 #include <vector>
 #include <map>
 #include <libfdt.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <base.hpp>
 

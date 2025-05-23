@@ -2,12 +2,12 @@
 # strip-wrapper to generate NEW stripped files out of INPUT
 set -e
 
-[[ $DEBUG -eq 1 ]] && exit 0 # target only rel builds
+[[ "$DEBUG" -eq 1 ]] && exit 0 # target only rel builds
 
 STANDALONE_STRIPPED=false
 STRIP_FLAGS=""
 
-$STANDALONE_STRIPPED && eval ${SH} ${MKDIR} ${SRP} # use our mkdir wrapper
+$STANDALONE_STRIPPED && eval "$SH" "$MKDIR" "$SRP" # use our mkdir wrapper
 
 while [[ $# -gt 0 ]]; do # last arg(s) are/is file(s)
     #echo "info: arg: $1"
@@ -25,6 +25,6 @@ while [[ $# -gt 0 ]]; do # last arg(s) are/is file(s)
     shift
 done
 
-eval ${STRIP_CMD} ${STRIP_FLAGS}
+eval "${STRIP_CMD}" ${STRIP_FLAGS}
 
 exit $?

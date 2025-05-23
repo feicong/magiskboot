@@ -1,5 +1,7 @@
 #include <functional>
 #include <memory>
+#include <unistd.h> // For lseek, close, R_OK, ftruncate
+#include <fcntl.h>  // For O_RDONLY etc, R_OK is actually in unistd.h
 
 #include <libfdt.h>
 #include <mincrypt/sha.h>
@@ -10,10 +12,13 @@
 #include "magiskboot.hpp"
 #include "compress.hpp"
 
-#ifdef SVB_WIN32
-#define off64_t off_t
-#define lseek64 lseek
-#define ftruncate64 ftruncate
+#ifndef SVB_WIN32
+  // On POSIX systems like macOS and Linux with modern settings,
+  // off_t is often 64-bit, and lseek/ftruncate handle large files.
+  // These defines map the *64 symbols to their standard counterparts if used in the code.
+  #define off64_t off_t
+  #define lseek64 lseek
+  #define ftruncate64 ftruncate
 #endif
 
 using namespace std;

@@ -61,7 +61,7 @@ static void recursive_dir_iterator(cpio::entry_map &entries, const char* root, c
     for (dirent *entry; (entry = xreaddir(cur));) {
         char *filename = (char *)malloc(strlen(path) + 2 +
 #ifndef SVB_MINGW
-        strlen(entry->name));
+        strlen(entry->d_name));
 #else
         entry->d_namlen);
 #endif

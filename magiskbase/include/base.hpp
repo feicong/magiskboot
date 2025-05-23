@@ -15,7 +15,7 @@
 #include "../misc.hpp"
 
 #ifndef SVB_WIN32
-#include <base-rs.hpp>
+// #include <base-rs.hpp>
 #endif
 
 #define LOG(fmt, args...) fprintf(stderr, fmt, ##args)

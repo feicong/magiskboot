@@ -148,9 +148,22 @@ static inline std::string rtrim(std::string &&s) {
 
 #ifndef SVB_WIN32
 int fork_dont_care();
+#if defined(__linux__)
 int fork_no_orphan();
 void init_argv0(int argc, char **argv);
 void set_nice_name(const char *name);
+#elif defined(__APPLE__)
+// macOS doesn't have PR_SET_PDEATHSIG or prctl for set_nice_name directly.
+// Provide stubs or alternative implementations if necessary.
+static inline int fork_no_orphan() { /* Basic fork, or implement alternative parent-death handling */ return xfork(); }
+static inline void init_argv0(int, char **) { /* No-op or store for alternative name setting */ }
+static inline void set_nice_name(const char *name) {
+    // On macOS, you can use pthread_setname_np(pthread_self(), name) for threads.
+    // For process name, it's trickier and usually set at exec.
+    // For now, this can be a no-op for the main process name from here.
+    (void)name; // Suppress unused parameter warning
+}
+#endif
 int switch_mnt_ns(int pid);
 int gen_rand_str(char *buf, int len, bool varlen = true);
 #endif

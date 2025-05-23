@@ -1,6 +1,15 @@
 #ifndef SVB_WIN32
+#if defined(__linux__)
 #include <sys/sendfile.h>
 #include <linux/fs.h>
+#elif defined(__APPLE__)
+// macOS uses a different sendfile, or it's part of unistd.h / sys/socket.h
+// For now, we'll assume it's available via unistd.h or similar, 
+// and will adjust xsendfile if needed later.
+#include <sys/socket.h> // sendfile is often here on BSD-like systems
+#include <sys/disk.h>   // For DOKIOCGETBLOCKCOUNT etc. if needed, or sys/ioctl.h for basic ioctls
+#include <sys/ioctl.h>  // For basic ioctls if needed
+#endif
 #endif
 
 #include <fcntl.h>
@@ -9,7 +18,9 @@
 
 #include <base.hpp>
 #ifndef SVB_WIN32
+#if defined(__linux__)
 #include <selinux.hpp>
+#endif
 #endif
 
 using namespace std;
@@ -240,11 +251,15 @@ void link_dir(int src, int dest) {
 int getattr(const char *path, file_attr *a) {
     if (xlstat(path, &a->st) == -1)
         return -1;
+#if defined(__linux__)
     char *con;
     if (lgetfilecon(path, &con) == -1)
         return -1;
     strcpy(a->con, con);
     freecon(con);
+#else
+    a->con[0] = '\0'; // No SELinux context on non-Linux
+#endif
     return 0;
 }
 
@@ -257,11 +272,15 @@ int getattrat(int dirfd, const char *name, file_attr *a) {
 int fgetattr(int fd, file_attr *a) {
     if (xfstat(fd, &a->st) < 0)
         return -1;
+#if defined(__linux__)
     char *con;
     if (fgetfilecon(fd, &con) < 0)
         return -1;
     strcpy(a->con, con);
     freecon(con);
+#else
+    a->con[0] = '\0'; // No SELinux context on non-Linux
+#endif
     return 0;
 }
 
@@ -270,8 +289,10 @@ int setattr(const char *path, file_attr *a) {
         return -1;
     if (chown(path, a->st.st_uid, a->st.st_gid) < 0)
         return -1;
+#if defined(__linux__)
     if (a->con[0] && lsetfilecon(path, a->con) < 0)
         return -1;
+#endif
     return 0;
 }
 
@@ -286,8 +307,10 @@ int fsetattr(int fd, file_attr *a) {
         return -1;
     if (fchown(fd, a->st.st_uid, a->st.st_gid) < 0)
         return -1;
+#if defined(__linux__)
     if (a->con[0] && fsetfilecon(fd, a->con) < 0)
         return -1;
+#endif
     return 0;
 }
 
@@ -387,6 +410,7 @@ void parse_prop_file(const char *file, const function<bool(string_view, string_v
 }
 
 #ifndef SVB_WIN32
+#if defined(__linux__)
 // Original source: https://android.googlesource.com/platform/bionic/+/master/libc/bionic/mntent.cpp
 // License: AOSP, full copyright notice please check original source
 static struct mntent *compat_getmntent_r(FILE *fp, struct mntent *e, char *buf, int buf_len) {
@@ -425,6 +449,7 @@ void parse_mnt(const char *file, const function<bool(mntent*)> &fn) {
         }
     }
 }
+#endif
 
 void backup_folder(const char *dir, vector<raw_file> &files) {
     char path[PATH_MAX];
@@ -458,7 +483,7 @@ void restore_folder(const char *dir, vector<raw_file> &files) {
     for (raw_file &file : files) {
         string path = base + "/" + file.path;
         if (S_ISDIR(file.attr.st.st_mode)) {
-            mkdirs(path, 0);
+            mkdirs(path.c_str(), 0);
         } else if (S_ISREG(file.attr.st.st_mode)) {
             if (auto fp = xopen_file(path.data(), "we"))
                 fwrite(file.content.data(), 1, file.content.size(), fp.get());
@@ -525,14 +550,41 @@ mmap_data::mmap_data(const char *name, bool rw) {
     if (fstat(fd, &st))
         return;
 #ifndef SVB_WIN32
+#if defined(__linux__)
     if (S_ISBLK(st.st_mode)) {
-        uint64_t size;
-        ioctl(fd, BLKGETSIZE64, &size);
-        sz = size;
+        uint64_t b_size = 0;
+        if (ioctl(fd, BLKGETSIZE64, &b_size) == 0) {
+            sz = b_size;
+        } else {
+            // Fallback or error
+            sz = st.st_size;
+        }
+    } else {
+        sz = st.st_size;
+    }
+#elif defined(__APPLE__)
+    if (S_ISBLK(st.st_mode)) {
+        // On macOS, st.st_size should typically work for block devices.
+        // Alternatively, one could use DOKIOCGETBLOCKCOUNT and DOKIOCGETBLOCKSIZE from <sys/disk.h>
+        // For simplicity, using st_size first.
+        sz = st.st_size;
+        // Example using ioctl if st_size is not reliable for some block devices:
+        // uint64_t block_count = 0;
+        // uint32_t block_size = 0;
+        // if (ioctl(fd, DKIOCGETBLOCKCOUNT, &block_count) == 0 && 
+        //     ioctl(fd, DKIOCGETBLOCKSIZE, &block_size) == 0) {
+        //     sz = block_count * block_size;
+        // } else {
+        //     sz = st.st_size; // Fallback
+        // }
     } else {
         sz = st.st_size;
     }
 #else
+    // Other non-Windows, non-Linux, non-Apple
+    sz = st.st_size;
+#endif
+#else // SVB_WIN32
     sz = st.st_size;
 #endif
     void *b = sz > 0

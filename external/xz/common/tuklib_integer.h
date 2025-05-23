@@ -59,11 +59,26 @@
 // Byte swapping //
 ///////////////////
 
-#if defined(HAVE___BUILTIN_BSWAPXX)
+#ifdef __APPLE__
+#	include <libkern/OSByteOrder.h>
+#	define bswap16(x) OSSwapInt16(x)
+#	define bswap32(x) OSSwapInt32(x)
+#	define bswap64(x) OSSwapInt64(x)
+#elif defined(HAVE___BUILTIN_BSWAPXX)
 	// GCC >= 4.8 and Clang
 #	define bswap16(n) __builtin_bswap16(n)
 #	define bswap32(n) __builtin_bswap32(n)
 #	define bswap64(n) __builtin_bswap64(n)
+
+#elif defined(HAVE_SYS_ENDIAN_H)
+	// *BSDs and Darwin
+#	include <sys/endian.h>
+#	ifdef __APPLE__
+#		include <libkern/OSByteOrder.h>
+#		define bswap16(x) OSSwapInt16(x)
+#		define bswap32(x) OSSwapInt32(x)
+#		define bswap64(x) OSSwapInt64(x)
+#	endif
 
 #elif defined(HAVE_BYTESWAP_H)
 	// glibc, uClibc, dietlibc
@@ -77,10 +92,6 @@
 #	ifdef HAVE_BSWAP_64
 #		define bswap64(num) bswap_64(num)
 #	endif
-
-#elif defined(HAVE_SYS_ENDIAN_H)
-	// *BSDs and Darwin
-#	include <sys/endian.h>
 
 #elif defined(HAVE_SYS_BYTEORDER_H)
 	// Solaris

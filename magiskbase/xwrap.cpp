@@ -6,10 +6,13 @@
 #include <sys/mman.h>
 #ifndef SVB_WIN32
 #include <sys/socket.h>
+#if defined(__linux__)
 #include <sys/sendfile.h>
-#include <sys/ptrace.h>
 #include <sys/inotify.h>
+#endif
+#include <sys/ptrace.h>
 #include <sys/mount.h>
+#include <poll.h>
 #else
 #include <errno.h>
 #include "windows.h"
@@ -126,7 +129,7 @@ off_t xlseek(int fd, off_t offset, int whence) {
     return ret;
 }
 
-#ifndef SVB_MINGW
+#if defined(__linux__)
 int xpipe2(int pipefd[2], int flags) {
     int ret = pipe2(pipefd, flags);
     if (ret < 0) {
@@ -134,9 +137,51 @@ int xpipe2(int pipefd[2], int flags) {
     }
     return ret;
 }
-#endif
+#elif defined(__APPLE__)
+int xpipe2(int pipefd[2], int flags) {
+    if (pipe(pipefd) < 0) {
+        PLOGE("pipe");
+        return -1;
+    }
+    if (flags & O_CLOEXEC) {
+        if (fcntl(pipefd[0], F_SETFD, FD_CLOEXEC) == -1 || 
+            fcntl(pipefd[1], F_SETFD, FD_CLOEXEC) == -1) {
+            PLOGE("fcntl F_SETFD FD_CLOEXEC for pipe");
+            close(pipefd[0]);
+            close(pipefd[1]);
+            return -1;
+        }
+    }
+    if (flags & O_NONBLOCK) {
+        if (fcntl(pipefd[0], F_SETFL, fcntl(pipefd[0], F_GETFL) | O_NONBLOCK) == -1 ||
+            fcntl(pipefd[1], F_SETFL, fcntl(pipefd[1], F_GETFL) | O_NONBLOCK) == -1) {
+            PLOGE("fcntl F_SETFL O_NONBLOCK for pipe");
+            close(pipefd[0]);
+            close(pipefd[1]);
+            return -1;
+        }
+    }
+    // Other flags like O_DIRECT are not standard for pipe2 and not handled here.
+    return 0;
+}
+#else
+// Fallback for other non-Linux, non-Apple - might error or not support flags
+int xpipe2(int pipefd[2], int flags) {
+    if (flags == 0) { // Only support non-flagged pipe for generic fallback
+        if (pipe(pipefd) < 0) {
+            PLOGE("pipe");
+            return -1;
+        }
+        return 0;
+    }
+    PLOGE("xpipe2 with flags not implemented for this platform");
+    return -1; 
+}
+#endif // __linux__ / __APPLE__ / else for xpipe2
 
 #ifndef SVB_WIN32
+
+#if defined(__linux__)
 int xsetns(int fd, int nstype) {
     int ret = setns(fd, nstype);
     if (ret < 0) {
@@ -221,6 +266,7 @@ int xlisten(int sockfd, int backlog) {
     return ret;
 }
 
+#if defined(__linux__)
 int xaccept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags) {
     int fd = accept4(sockfd, addr, addrlen, flags);
     if (fd < 0) {
@@ -253,8 +299,9 @@ void *xrealloc(void *ptr, size_t size) {
     }
     return p;
 }
+#endif // Closes #ifndef SVB_WIN32 from ~L196 (xsetsid, xsocket...xrealloc block)
 
-#ifndef SVB_WIN32
+#ifndef SVB_WIN32 // This is for xsendmsg, xrecvmsg, xpthread_create from ~L246
 ssize_t xsendmsg(int sockfd, const struct msghdr *msg, int flags) {
     int sent = sendmsg(sockfd, msg, flags);
     if (sent < 0) {
@@ -338,7 +385,7 @@ int xdup2(int oldfd, int newfd) {
     return ret;
 }
 
-#ifndef SVB_MINGW
+#if defined(__linux__)
 int xdup3(int oldfd, int newfd, int flags) {
     int ret = dup3(oldfd, newfd, flags);
     if (ret < 0) {
@@ -459,6 +506,8 @@ int xlinkat(int olddirfd, const char *oldpath, int newdirfd, const char *newpath
 #endif
 
 #ifndef SVB_WIN32
+
+#if defined(__linux__)
 int xmount(const char *source, const char *target,
     const char *filesystemtype, unsigned long mountflags,
     const void *data) {
@@ -468,15 +517,24 @@ int xmount(const char *source, const char *target,
     }
     return ret;
 }
+#endif // __linux__ for xmount
 
 int xumount(const char *target) {
-    int ret = umount(target);
+#if defined(__APPLE__)
+    int ret = unmount(target, 0); // macOS is unmount(target, flags)
+#elif defined(__linux__)
+    int ret = umount(target);     // Linux umount
+#else
+    // Fallback for other systems, may not work
+    int ret = umount(target); // Assuming POSIX umount if not Apple/Linux
+#endif
     if (ret < 0) {
-        PLOGE("umount %s", target);
+        PLOGE("umount/unmount %s", target);
     }
     return ret;
 }
 
+#if defined(__linux__)
 int xumount2(const char *target, int flags) {
     int ret = umount2(target, flags);
     if (ret < 0) {
@@ -484,7 +542,9 @@ int xumount2(const char *target, int flags) {
     }
     return ret;
 }
-#endif
+#endif // __linux__ for xumount2
+
+#endif // SVB_WIN32 for the block containing xmount, xumount, xumount2
 
 int xrename(const char *oldpath, const char *newpath) {
     int ret = rename(oldpath, newpath);
@@ -534,11 +594,29 @@ void *xmmap(void *addr, size_t length, int prot, int flags,
 }
 
 ssize_t xsendfile(int out_fd, int in_fd, off_t *offset, size_t count) {
+#if defined(__APPLE__)
+    off_t len = count;
+    // Note: macOS sendfile has in_fd and out_fd swapped compared to Linux
+    // It also expects len to be a pointer, and offset is the starting offset in the input file.
+    // The offset parameter in Linux sendfile is a pointer to an offset that is updated.
+    // For this specific usage (offset is nullptr, meaning read from current offset),
+    // we pass 0 as the offset to macOS sendfile and it should behave similarly for seeking files.
+    // If offset was used on Linux, a more complex adaptation would be needed.
+    int ret = sendfile(in_fd, out_fd, (offset ? *offset : 0), &len, nullptr, 0);
+    if (ret < 0) {
+        PLOGE("sendfile");
+        return -1;
+    }
+    // macOS sendfile returns 0 on success, and len is updated with bytes sent.
+    // Linux sendfile returns bytes sent, or -1 on error.
+    return len; 
+#else
     ssize_t ret = sendfile(out_fd, in_fd, offset, count);
     if (ret < 0) {
         PLOGE("sendfile");
     }
     return ret;
+#endif
 }
 
 #ifndef SVB_WIN32
@@ -558,6 +636,7 @@ int xpoll(struct pollfd *fds, nfds_t nfds, int timeout) {
     return ret;
 }
 
+#if defined(__linux__)
 int xinotify_init1(int flags) {
     int ret = inotify_init1(flags);
     if (ret < 0) {
@@ -565,6 +644,7 @@ int xinotify_init1(int flags) {
     }
     return ret;
 }
+#endif
 #endif
 
 #ifndef SVB_MINGW
@@ -589,10 +669,35 @@ int xmknod(const char *pathname, mode_t mode, dev_t dev) {
     return ret;
 }
 
+#if defined(__linux__)
 long xptrace(int request, pid_t pid, void *addr, void *data) {
     long ret = ptrace(request, pid, addr, data);
-    if (ret < 0)
+    if (ret < 0) // On Linux, -1 always means error for ptrace
         PLOGE("ptrace %d", pid);
     return ret;
 }
-#endif
+#elif defined(__APPLE__)
+// macOS ptrace has different signature for 3rd and 4th arg
+// and different error reporting (-1 can be valid return for some requests)
+long xptrace(int request, pid_t pid, void *addr, int data) { // Note: 4th arg is int for macOS ptrace
+    // The actual type of addr for ptrace on macOS is caddr_t (char*).
+    // The data arg is int.
+    // Need to be careful if the original `void *data` was meant for larger types.
+    // Assuming for now it was for an int-sized value or address that fits in int.
+    long ret = ptrace(request, pid, (caddr_t)addr, data);
+    if (ret == -1 && errno != 0) { // Check errno on macOS for actual error
+        PLOGE("ptrace %d", pid);
+    }
+    return ret;
+}
+#else
+// Fallback or error for other non-Linux, non-Apple platforms if ptrace is used
+long xptrace(int request, pid_t pid, void *addr, void *data) {
+    PLOGE("ptrace not implemented for this platform");
+    return -1;
+}
+#endif // Platform specific ptrace
+
+#endif // SVB_WIN32 for xmknod and xptrace block
+
+#endif // Potentially missing #endif for an outer #ifndef SVB_WIN32

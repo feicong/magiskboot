@@ -1,5 +1,7 @@
 #include <mincrypt/sha.h>
 #include <base.hpp>
+#include <getopt.h>
+#include <unistd.h>
 
 #include "magiskboot.hpp"
 #include "compress.hpp"

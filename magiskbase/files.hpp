@@ -1,7 +1,9 @@
 #pragma once
 #include <sys/mman.h>
 #ifndef SVB_WIN32
+#if defined(__linux__)
 #include <mntent.h>
+#endif
 #endif
 #include <sys/stat.h>
 #include <functional>
@@ -76,7 +78,9 @@ int fsetattr(int fd, file_attr *a);
 void fclone_attr(int src, int dest);
 void clone_attr(const char *src, const char *dest);
 void clone_dir(int src, int dest);
+#if defined(__linux__)
 void parse_mnt(const char *file, const std::function<bool(mntent*)> &fn);
+#endif
 void backup_folder(const char *dir, std::vector<raw_file> &files);
 void restore_folder(const char *dir, std::vector<raw_file> &files);
 std::string find_apk_path(const char *pkg);

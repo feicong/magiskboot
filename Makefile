@@ -4,13 +4,13 @@ CROSS_COMPILE ?=
 SH ?= sh
 
 # Build configuration (static only, shared are broken)
-override TOPDIR ?= $(shell cygpath -m $(shell pwd))
+override TOPDIR ?= $(shell pwd)
 override STATIC ?= 1
-override SVB_MINGW ?= 1
-override SVB_FLAGS ?= -DSVB_WIN32 -DANDROID
+override SVB_MINGW ?= 0
+override SVB_FLAGS ?= -DANDROID
 override BUILD_FLAGS ?= -fno-exceptions -fdiagnostics-absolute-paths -Wno-deprecated-non-prototype -DHOST
 override BUILD_EXTRAS ?= 0
-override BIN_EXT ?= .exe
+override BIN_EXT ?=
 override LIB_EXT ?= .a
 
 ifeq ($(STATIC),0)
@@ -24,13 +24,13 @@ override SVB_FLAGS += -DSVB_DEBUG
 else
 override BUILD_FLAGS += -Oz
 endif
-override LDFLAGS ?= -Wl,-gc-sections
+override LDFLAGS ?=
 
 ifeq ($(SVB_MINGW),1)
 override SVB_FLAGS += -DSVB_MINGW -DHAVE_LIB_NT_H -I$(TOPDIR)/libnt/include
 all:: svbnt magiskboot
 else
-all:: print_info init_out res magiskboot
+all:: print_info init_out magiskboot
 endif
 
 override CC := $(CROSS_COMPILE)clang
@@ -46,9 +46,13 @@ override LDXX := $(CROSS_COMPILE)clang++ -std=$(CXXSTD) -stdlib=$(CXXLIB) $(BUIL
 #override LDFLAGS += -Wl,--large-address-aware
 endif
 override STRIP_CMD ?= $(CROSS_COMPILE)strip
+ifeq ($(SVB_MINGW),1)
 override STRIPFLAGS ?= --strip-all -R .comment -R .gnu.version --strip-unneeded
+else
+override STRIPFLAGS ?= -x // macOS compatible strip flag
+endif
 override AR := $(CROSS_COMPILE)ar
-override ARFLAGS := rcsD
+override ARFLAGS := rcs
 
 override DEPLOY ?= $(TOPDIR)/build
 override OUT ?= $(TOPDIR)/out
@@ -69,6 +73,8 @@ override DLL_RES ?= $(OBJ)/dll.res
 
 ifeq ($(SVB_MINGW),1)
 override LIBS ?= -lWs2_32 $(LIB)/libnt.a -limagehlp -lpthread
+else
+override LIBS ?= -lpthread
 endif
 
 override NTLIB ?= libnt
@@ -295,7 +301,7 @@ print_info:
 	$(info INFO: CXX STD LIB '$(CXXLIB)')
 	$(info INFO: CC '$(CC) $(CFLAGS)')
 	$(info INFO: CXX '$(CXX) $(CXXFLAGS)')
-	$(info INFO: LD '$(CXX) $(CXXFLAGS) $(LDFLAGS) $(BIN_RES) $(LIBS)')
+	$(info INFO: LD '$(CXX) $(CXXFLAGS) $(LDFLAGS) $(LIBS)')
 	$(info INFO: AR '$(AR) $(ARFLAGS)')
 	$(info INFO: STRIP '$(STRIP) $(STRIPFLAGS)')
 
@@ -357,12 +363,12 @@ $(OBJ)/%.o: $(TOPDIR)/%.c
 $(OBJ)/%.o: %.cpp
 	@$(MKDIR) -p `dirname $@`
 	@echo -e "  CXX\t    `basename $@`"
-	@$(CXX) -static $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(OBJ)/magiskboot/%.o: %.cpp
 	@$(MKDIR) -p `dirname $@`
 	@echo -e "  CXX\t    `basename $@`"
-	@$(CXX) -static $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 MAGISKBOOT_LD ?= $(LIB)/libmincrypt.a $(LIB)/liblzma.a $(LIB)/libbz2.a \
 		 $(LIB)/liblz4.a $(LIB)/libzopfli.a $(LIB)/libfdt.a $(LIB)/libz.a
@@ -372,7 +378,7 @@ endif
 $(OUT)/magiskboot$(BIN_EXT): $(MAGISKBOOT_OBJ) $(LIB)/libmagiskbase.a $(MAGISKBOOT_LD)
 	@$(MKDIR) -p `dirname $@`
 	@echo -e "  LD\t    `basename $@`"
-	@$(CXX) $(CXXFLAGS) $^ -o $@ -static $(LDFLAGS) $(BIN_RES) $(LIBS)
+	@$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS) $(LIBS)
 	@$(STRIP) $(STRIPFLAGS) $@
 
 $(LIB)/libmagiskbase.a: $(LIBBASE_OBJ)
