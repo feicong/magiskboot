@@ -1,5 +1,5 @@
 # env controlled
-DEBUG ?= 0
+DEBUG ?= 1
 CROSS_COMPILE ?=
 SH ?= sh
 
@@ -19,7 +19,7 @@ override LIB_EXT ?= .dll
 endif
 
 ifeq ($(DEBUG),1)
-override BUILD_FLAGS += -ggdb -ffunction-sections -Wall -Wextra -Wpedantic -Wconversion-null -Wno-gnu-include-next
+override BUILD_FLAGS += -ggdb -O0 -ffunction-sections -Wall -Wextra -Wpedantic -Wconversion-null -Wno-gnu-include-next
 override SVB_FLAGS += -DSVB_DEBUG
 else
 override BUILD_FLAGS += -Oz
@@ -65,7 +65,7 @@ ifeq ($(STATIC),0)
 override LIB_OUT ?= $(SLIB)
 endif
 
-override STRIP ?= $(SH) $(TOPDIR)/scripts/strip.sh
+# override STRIP ?= $(SH) $(TOPDIR)/scripts/strip.sh
 override MKDIR ?= $(SH) $(TOPDIR)/scripts/mkdir.sh
 
 override BIN_RES ?= $(OBJ)/bin.res
@@ -379,7 +379,12 @@ $(OUT)/magiskboot$(BIN_EXT): $(MAGISKBOOT_OBJ) $(LIB)/libmagiskbase.a $(MAGISKBO
 	@$(MKDIR) -p `dirname $@`
 	@echo -e "  LD\t    `basename $@`"
 	@$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS) $(LIBS)
+ifeq ($(DEBUG),1)
+	@echo -e "  DSYM\t    `basename $@`.dSYM"
+	@dsymutil $@ -o $@.dSYM
+else
 	@$(STRIP) $(STRIPFLAGS) $@
+endif
 
 $(LIB)/libmagiskbase.a: $(LIBBASE_OBJ)
 	@$(MKDIR) -p `dirname $@`
