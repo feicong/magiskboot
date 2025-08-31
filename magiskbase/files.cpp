@@ -1,14 +1,15 @@
+// 文件系统操作实用工具实现
 #ifndef SVB_WIN32
 #if defined(__linux__)
 #include <sys/sendfile.h>
 #include <linux/fs.h>
 #elif defined(__APPLE__)
-// macOS uses a different sendfile, or it's part of unistd.h / sys/socket.h
-// For now, we'll assume it's available via unistd.h or similar, 
-// and will adjust xsendfile if needed later.
-#include <sys/socket.h> // sendfile is often here on BSD-like systems
-#include <sys/disk.h>   // For DOKIOCGETBLOCKCOUNT etc. if needed, or sys/ioctl.h for basic ioctls
-#include <sys/ioctl.h>  // For basic ioctls if needed
+// macOS使用不同的sendfile，或者它是unistd.h / sys/socket.h的一部分
+// 目前，我们假设它通过unistd.h或类似文件可用，
+// 如果需要的话，稍后会调整xsendfile
+#include <sys/socket.h> // sendfile在类BSD系统上通常在这里
+#include <sys/disk.h>   // 如果需要DOKIOCGETBLOCKCOUNT等，或基本ioctl的sys/ioctl.h
+#include <sys/ioctl.h>  // 如果需要基本ioctl
 #endif
 #endif
 

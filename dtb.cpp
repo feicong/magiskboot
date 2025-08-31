@@ -1,3 +1,4 @@
+// 设备树二进制文件处理实现
 #include <bitset>
 #include <vector>
 #include <map>
@@ -14,9 +15,10 @@
 
 using namespace std;
 
-constexpr int MAX_DEPTH = 32;
-static bitset<MAX_DEPTH> depth_set;
+constexpr int MAX_DEPTH = 32;          // 最大树深度
+static bitset<MAX_DEPTH> depth_set;    // 深度标记集合
 
+// 格式化输出节点
 static void pretty_node(int depth) {
     if (depth == 0)
         return;
@@ -27,6 +29,7 @@ static void pretty_node(int depth) {
     printf(depth_set[depth - 1] ? "├── " : "└── ");
 }
 
+// 格式化输出属性
 static void pretty_prop(int depth) {
     for (int i = 0; i < depth; ++i)
         printf(depth_set[i] ? "│   " : "    ");
@@ -34,12 +37,13 @@ static void pretty_prop(int depth) {
     printf(depth_set[depth] ? "│  " : "   ");
 }
 
+// 打印设备树节点
 static void print_node(const void *fdt, int node = 0, int depth = 0) {
-    // Print node itself
+    // 打印节点本身
     pretty_node(depth);
     printf("#%d: %s\n", node, fdt_get_name(fdt, node, nullptr));
 
-    // Print properties
+    // 打印属性
     depth_set[depth] = fdt_first_subnode(fdt, node) >= 0;
     int prop;
     fdt_for_each_property_offset(prop, fdt, node) {
@@ -50,11 +54,11 @@ static void print_node(const void *fdt, int node = 0, int depth = 0) {
 
         bool is_str = !(size > 1 && value[0] == 0);
         if (is_str) {
-            // Scan through value to see if printable
+            // 扫描值以检查是否可打印
             for (int i = 0; i < size; ++i) {
                 char c = value[i];
                 if (i == size - 1) {
-                    // Make sure null terminate
+                    // 确保以null结尾
                     is_str = c == '\0';
                 } else if ((c > 0 && c < 32) || c >= 127) {
                     is_str = false;
@@ -70,7 +74,7 @@ static void print_node(const void *fdt, int node = 0, int depth = 0) {
         }
     }
 
-    // Recursive
+    // 递归处理
     if (depth_set[depth]) {
         int child;
         int prev = -1;
@@ -84,6 +88,7 @@ static void print_node(const void *fdt, int node = 0, int depth = 0) {
     }
 }
 
+// 查找fstab节点
 static int find_fstab(const void *fdt, int node = 0) {
     if (auto name = fdt_get_name(fdt, node, nullptr); name && name == "fstab"sv)
         return node;
@@ -96,6 +101,7 @@ static int find_fstab(const void *fdt, int node = 0) {
     return -1;
 }
 
+// 对每个FDT执行操作的模板函数
 template<typename Func>
 static void for_each_fdt(const char *file, bool rw, Func fn) {
     auto m = mmap_data(file, rw);
@@ -105,10 +111,11 @@ static void for_each_fdt(const char *file, bool rw, Func fn) {
         if (fdt == nullptr)
             break;
         fn(fdt);
-        fdt += fdt_totalsize(fdt);
+        fdt += fdt_totalsize(fdt);  // 移动到下一个DTB
     }
 }
 
+// 打印DTB内容
 static void dtb_print(const char *file, bool fstab) {
     fprintf(stderr, "Loading dtbs from [%s]\n", file);
     int dtb_num = 0;
@@ -127,6 +134,7 @@ static void dtb_print(const char *file, bool fstab) {
     fprintf(stderr, "\n");
 }
 
+// 修补DTB文件
 static bool dtb_patch(const char *file) {
     fprintf(stderr, "Loading dtbs from [%s]\n", file);
 
@@ -134,7 +142,7 @@ static bool dtb_patch(const char *file) {
     bool patched = false;
     for_each_fdt(file, true, [&](uint8_t *fdt) {
         int node;
-        // Patch the chosen node for bootargs
+        // 修补chosen节点的bootargs
         fdt_for_each_subnode(node, fdt, 0) {
             if (auto name = fdt_get_name(fdt, node, nullptr); !name || name != "chosen"sv)
                 continue;
@@ -153,7 +161,7 @@ static bool dtb_patch(const char *file) {
                 fdt_for_each_subnode(node, fdt, fstab) {
                     int len;
                     char *value = (char *) fdt_getprop(fdt, node, "fsmgr_flags", &len);
-                    patched |= patch_verity(value, len) != len;
+                    patched |= patch_verity(value, len) != len;  // 修补验证标志
                 }
             }
         }
@@ -162,9 +170,10 @@ static bool dtb_patch(const char *file) {
 }
 
 [[noreturn]]
+// 测试DTB文件
 static void dtb_test(const char *file) {
     for_each_fdt(file, false, [&](uint8_t *fdt) {
-        // Find the system node in fstab
+        // 在fstab中查找system节点
         if (int fstab = find_fstab(fdt); fstab >= 0) {
             int node;
             fdt_for_each_subnode(node, fdt, fstab) {
@@ -172,7 +181,7 @@ static void dtb_test(const char *file) {
                     continue;
                 int len;
                 if (auto value = fdt_getprop(fdt, node, "mnt_point", &len)) {
-                    // If mnt_point is set to /system_root, abort!
+                    // 如果mnt_point设置为/system_root，则退出！
                     if (strncmp(static_cast<const char *>(value), "/system_root", len) == 0) {
                         exit(1);
                     }
@@ -183,6 +192,7 @@ static void dtb_test(const char *file) {
     exit(0);
 }
 
+// DTB命令处理函数
 int dtb_commands(int argc, char *argv[]) {
     char *dtb = argv[0];
     ++argv;
@@ -202,18 +212,18 @@ int dtb_commands(int argc, char *argv[]) {
     }
 }
 
-// The following code is unused, left here for historical purpose. Since the code is
-// extremely complicated, I won't want to rewrite this whole thing if somehow we need
-// to use it in the future...
+// 以下代码未使用，保留用于历史目的。由于代码极其复杂，
+// 如果将来需要使用它，我不想重写整个代码...
 
 namespace {
 
 struct fdt_blob {
-    void *fdt;
-    uint32_t offset;
-    uint32_t len;
+    void *fdt;          // FDT数据指针
+    uint32_t offset;    // 偏移量
+    uint32_t len;       // 长度
 };
 
+// FDT修补函数
 static bool fdt_patch(void *fdt) {
     int fstab = find_fstab(fdt);
     if (fstab < 0)
@@ -222,7 +232,7 @@ static bool fdt_patch(void *fdt) {
     int node;
     fdt_for_each_subnode(node, fdt, fstab) {
         const char *name = fdt_get_name(fdt, node, nullptr);
-        // Force remove AVB for 2SI since it may bootloop some devices
+        // 强制移除2SI的AVB，因为可能导致某些设备启动循环
         int len;
         auto value = (const char *) fdt_getprop(fdt, node, "fsmgr_flags", &len);
         string copy(value, len);

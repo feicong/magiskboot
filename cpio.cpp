@@ -1,3 +1,4 @@
+// CPIO归档文件处理实现
 #include <unistd.h>
 #include <fcntl.h>
 #include <libgen.h>
@@ -9,23 +10,25 @@
 
 using namespace std;
 
+// CPIO newc头部结构
 struct cpio_newc_header {
-    char magic[6];
-    char ino[8];
-    char mode[8];
-    char uid[8];
-    char gid[8];
-    char nlink[8];
-    char mtime[8];
-    char filesize[8];
-    char devmajor[8];
-    char devminor[8];
-    char rdevmajor[8];
-    char rdevminor[8];
-    char namesize[8];
-    char check[8];
+    char magic[6];      // 魔数
+    char ino[8];        // 索引节点号
+    char mode[8];       // 文件模式
+    char uid[8];        // 用户ID
+    char gid[8];        // 组ID
+    char nlink[8];      // 硬链接数
+    char mtime[8];      // 修改时间
+    char filesize[8];   // 文件大小
+    char devmajor[8];   // 设备主号
+    char devminor[8];   // 设备次号
+    char rdevmajor[8];  // 特殊设备主号
+    char rdevminor[8];  // 特殊设备次号
+    char namesize[8];   // 文件名大小
+    char check[8];      // 校验和
 } __attribute__((packed));
 
+// 8位十六进制字符串转换为uint32
 static uint32_t x8u(const char *hex) {
     uint32_t val, inpos = 8, outpos;
     char pattern[6];
@@ -34,7 +37,7 @@ static uint32_t x8u(const char *hex) {
         hex++;
         if (!--inpos) return 0;
     }
-    // Because scanf gratuitously treats %*X differently than printf does.
+    // 因为scanf对%*X的处理方式与printf不同
     sprintf(pattern, "%%%dx%%n", inpos);
     sscanf(hex, pattern, &val, &outpos);
     if (inpos != outpos)
@@ -43,6 +46,7 @@ static uint32_t x8u(const char *hex) {
     return val;
 }
 
+// CPIO入口构造函数
 cpio_entry::cpio_entry(uint32_t mode) : mode(mode), uid(0), gid(0), filesize(0), data(nullptr) {}
 
 cpio_entry::cpio_entry(uint32_t mode, uint32_t uid, uint32_t gid) : mode(mode), uid(uid), gid(gid), filesize(0), data(nullptr) {}
@@ -51,6 +55,7 @@ cpio_entry::cpio_entry(const cpio_newc_header *h) :
 mode(x8u(h->mode)), uid(x8u(h->uid)), gid(x8u(h->gid)), filesize(x8u(h->filesize)), data(nullptr)
 {}
 
+// 递归目录遍历器
 static void recursive_dir_iterator(cpio::entry_map &entries, const char* root, const char *sub = nullptr) {
     auto path = sub ? sub : root;
     auto cur = opendir(path);
@@ -77,12 +82,12 @@ static void recursive_dir_iterator(cpio::entry_map &entries, const char* root, c
         auto name = filename + strlen(root) + 1;
         auto type = st.st_mode & S_IFMT;
 
-        if (type == S_IFREG) {
+        if (type == S_IFREG) {                      // 常规文件
             auto m = mmap_data(filename);
             e->filesize = m.sz;
             e->data = xmalloc(m.sz);
             memcpy(e->data, m.buf, m.sz);
-        } else if (type == S_IFLNK) {
+        } else if (type == S_IFLNK) {               // 符号链接
             char* ln_target = (char *)malloc(st.st_size + 1);
             int read_cnt = xreadlink(filename, ln_target, st.st_size);
 
@@ -92,7 +97,7 @@ static void recursive_dir_iterator(cpio::entry_map &entries, const char* root, c
             }
             e->filesize = st.st_size;
             e->data = ln_target;
-        } else { // assume S_IFDIR
+        } else {                                    // 假设为目录
             recursive_dir_iterator(entries, root, filename);
         }
 
@@ -103,11 +108,13 @@ static void recursive_dir_iterator(cpio::entry_map &entries, const char* root, c
     closedir(cur);
 }
 
+// 转储CPIO到文件
 void cpio::dump(const char *file) {
     fprintf(stderr, "Dump cpio: [%s]\n", file);
     dump(xfopen(file, "we"));
 }
 
+// 删除条目（迭代器版本）
 void cpio::rm(entry_map::iterator it) {
     if (it == entries.end())
         return;
@@ -115,6 +122,7 @@ void cpio::rm(entry_map::iterator it) {
     entries.erase(it);
 }
 
+// 删除条目（名称版本）
 void cpio::rm(const char *name, bool r) {
     size_t len = strlen(name);
     for (auto it = entries.begin(); it != entries.end();) {
@@ -123,30 +131,31 @@ void cpio::rm(const char *name, bool r) {
             auto tmp = it;
             ++it;
             rm(tmp);
-            if (!r) return;
+            if (!r) return;     // 如果不递归，删除一个后返回
         } else {
             ++it;
         }
     }
 }
 
+// 提取单个条目
 void cpio::extract_entry(const entry_map::value_type &e, const char *file) {
     fprintf(stderr, "Extract [%s] to [%s]\n", e.first.data(), file);
     unlink(file);
     rmdir(file);
-    // Make sure parent folders exist
+    // 确保父目录存在
     char *parent = dirname(strdup(file));
     xmkdirs(parent, 0755);
     if (S_ISDIR(e.second->mode)) {
         xmkdir(file, e.second->mode & 0777);
-    } else if (S_ISREG(e.second->mode)) {
+    } else if (S_ISREG(e.second->mode)) {        // 常规文件
         int fd = xopen(file, O_CREAT | O_WRONLY | O_TRUNC, e.second->mode & 0777);
         xwrite(fd, e.second->data, e.second->filesize);
 #ifndef SVB_WIN32
         fchown(fd, e.second->uid, e.second->gid);
 #endif
         close(fd);
-    } else if (S_ISLNK(e.second->mode) && e.second->filesize < 4096) {
+    } else if (S_ISLNK(e.second->mode) && e.second->filesize < 4096) {  // 符号链接
         char target[4096];
         memcpy(target, e.second->data, e.second->filesize);
         target[e.second->filesize] = '\0';
@@ -159,6 +168,7 @@ void cpio::extract_entry(const entry_map::value_type &e, const char *file) {
 #endif
 }
 
+// 提取所有条目到ramdisk目录
 void cpio::extract() {
     unlink("cpio");
     rmdir("ramdisk");
@@ -171,6 +181,7 @@ void cpio::extract() {
         extract_entry(e, ("ramdisk/" + e.first).data());
 }
 
+// 从目录加载CPIO
 void cpio::load_cpio(const char* dir, const char* config, bool sync) {
     entry_map dentries;
 
@@ -181,6 +192,7 @@ void cpio::load_cpio(const char* dir, const char* config, bool sync) {
         return;
     }
 
+    // 逐行读取配置文件
     file_readline(config, [&](string_view line) -> bool {
         if (line.empty() || line[0] == '#')
             return true;
@@ -222,15 +234,16 @@ void cpio::load_cpio(const char* dir, const char* config, bool sync) {
 
         bool is_new = res >= 0;
 
-        if (res < 0) { // smh is removed
+        // 同步比较两个条目映射
+        if (res < 0) {              // 文件已删除
             rm(rhs++);
-        } else if (res == 0) { // smh is same, maybe
+        } else if (res == 0) {      // 文件相同，可能有变化
             is_new = rhs->second->filesize != lhs->second->filesize ||
                      rhs->second->mode != lhs->second->mode ||
                      rhs->second->uid != lhs->second->uid ||
                      rhs->second->gid != lhs->second->gid ||
                      memcmp(lhs->second->data, rhs->second->data, lhs->second->filesize) != 0;
-        } // smh is added
+        }                           // 文件已添加
 
         if (is_new) {
             fprintf(stderr, "%s entry [%s] (%04o)\n", res > 0 ? "Add new" : "Updated", lhs->first.data(), lhs->second->mode & 0777);
@@ -245,6 +258,7 @@ void cpio::load_cpio(const char* dir, const char* config, bool sync) {
     }
 }
 
+// 提取指定条目到文件
 bool cpio::extract(const char *name, const char *file) {
     auto it = entries.find(name);
     if (it != entries.end()) {
@@ -255,12 +269,14 @@ bool cpio::extract(const char *name, const char *file) {
     return false;
 }
 
+// 检查条目是否存在
 bool cpio::exists(const char *name) {
     return entries.count(name) != 0;
 }
 
 #define do_out(buf, len) pos += fwrite(buf, 1, len, out);
 #define out_align() do_out(zeros, align_padding(pos, 4))
+// 将CPIO转储到文件流
 void cpio::dump(FILE *out) {
     size_t pos = 0;
     unsigned inode = 300000;
@@ -290,7 +306,7 @@ void cpio::dump(FILE *out) {
             out_align();
         }
     }
-    // Write trailer
+    // 写入结尾标记
     sprintf(header, "070701%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x",
             inode++, 0755, 0, 0, 1, 0, 0, 0, 0, 0, 0, 11, 0);
     do_out(header, 110);
@@ -299,12 +315,14 @@ void cpio::dump(FILE *out) {
     fclose(out);
 }
 
+// 从文件加载CPIO
 void cpio::load_cpio(const char *file) {
     fprintf(stderr, "Loading cpio: [%s]\n", file);
     auto m = mmap_data(file);
     load_cpio(reinterpret_cast<char *>(m.buf), m.sz);
 }
 
+// 插入新条目
 void cpio::insert(string_view name, cpio_entry *e) {
     auto it = entries.find(name);
     if (it != entries.end()) {
@@ -314,6 +332,7 @@ void cpio::insert(string_view name, cpio_entry *e) {
     }
 }
 
+// 添加文件条目
 void cpio::add(mode_t mode, const char *name, const char *file) {
     auto m = mmap_data(file);
     auto e = new cpio_entry(S_IFREG | mode);
@@ -324,11 +343,13 @@ void cpio::add(mode_t mode, const char *name, const char *file) {
     fprintf(stderr, "Add entry [%s] (%04o)\n", name, mode);
 }
 
+// 创建目录条目
 void cpio::mkdir(mode_t mode, const char *name) {
     insert(name, new cpio_entry(S_IFDIR | mode));
     fprintf(stderr, "Create directory [%s] (%04o)\n", name, mode);
 }
 
+// 创建符号链接条目
 void cpio::ln(const char *target, const char *name) {
     auto e = new cpio_entry(S_IFLNK);
     e->filesize = strlen(target);
@@ -337,6 +358,7 @@ void cpio::ln(const char *target, const char *name) {
     fprintf(stderr, "Create symlink [%s] -> [%s]\n", name, target);
 }
 
+// 移动条目（迭代器版本）
 void cpio::mv(entry_map::iterator it, const char *name) {
     fprintf(stderr, "Move [%s] -> [%s]\n", it->first.data(), name);
     auto e = it->second.release();
@@ -344,6 +366,7 @@ void cpio::mv(entry_map::iterator it, const char *name) {
     insert(name, e);
 }
 
+// 移动条目（名称版本）
 bool cpio::mv(const char *from, const char *to) {
     auto it = entries.find(from);
     if (it != entries.end()) {
@@ -356,6 +379,7 @@ bool cpio::mv(const char *from, const char *to) {
 
 #define pos_align(p) p = align_to(p, 4)
 
+// 从缓冲区加载CPIO
 void cpio::load_cpio(const char *buf, size_t sz) {
     size_t pos = 0;
     while (pos < sz) {
@@ -369,8 +393,8 @@ void cpio::load_cpio(const char *buf, size_t sz) {
         if (name == "." || name == "..")
             continue;
         if (name == "TRAILER!!!") {
-            // Android support multiple CPIO being concatenated
-            // Search for the next cpio header
+            // Android支持多个CPIO连接
+            // 搜索下一个cpio头部
             auto next = static_cast<const char *>(memmem(buf + pos, sz - pos, "070701", 6));
             if (next == nullptr)
                 break;

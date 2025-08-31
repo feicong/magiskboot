@@ -1,11 +1,13 @@
+// 文件格式检测和处理实现
 #include "format.hpp"
 
-Name2Fmt name2fmt;
-Fmt2Name fmt2name;
-Fmt2Ext fmt2ext;
+Name2Fmt name2fmt;  // 名称到格式的映射
+Fmt2Name fmt2name;  // 格式到名称的映射
+Fmt2Ext fmt2ext;    // 格式到扩展名的映射
 
 #define CHECKED_MATCH(s) (len >= (sizeof(s) - 1) && BUFFER_MATCH(buf, s))
 
+// 检查文件格式
 format_t check_fmt(const void *buf, size_t len) {
     if (CHECKED_MATCH(CHROMEOS_MAGIC)) {
         return CHROMEOS;
@@ -96,6 +98,7 @@ const char *Fmt2Ext::operator[](format_t fmt) {
 
 #define CHECK(s, f) else if (name == s) return f;
 
+// 名称到格式的转换
 format_t Name2Fmt::operator[](std::string_view name) {
     if (0) {}
     CHECK("gzip", GZIP)

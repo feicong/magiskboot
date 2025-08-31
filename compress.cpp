@@ -1,3 +1,4 @@
+// 压缩/解压缩实现文件，支持多种压缩格式
 #include <memory>
 #include <functional>
 
@@ -20,29 +21,33 @@ using namespace std;
 #define bwrite this->base->write
 #define crc32_z crc32
 
-constexpr size_t CHUNK = 0x40000;
-constexpr size_t LZ4_UNCOMPRESSED = 0x800000;
+// 常量定义
+constexpr size_t CHUNK = 0x40000;           // 64KB块大小
+constexpr size_t LZ4_UNCOMPRESSED = 0x800000;  // 8MB未压缩大小
 constexpr size_t LZ4_COMPRESSED = LZ4_COMPRESSBOUND(LZ4_UNCOMPRESSED);
 
+// 输出流类
 class out_stream : public filter_stream {
     using filter_stream::filter_stream;
     using stream::read;
 };
 
+// gzip流处理类
 class gz_strm : public out_stream {
 public:
     bool write(const void *buf, size_t len) override {
         return len == 0 || do_write(buf, len, Z_NO_FLUSH);
     }
 
+    // 析构函数，完成压缩/解压缩
     ~gz_strm() override {
         do_write(nullptr, 0, Z_FINISH);
         switch(mode) {
         case DECODE:
-            inflateEnd(&strm);
+            inflateEnd(&strm);     // 结束解压缩
             break;
         case ENCODE:
-            deflateEnd(&strm);
+            deflateEnd(&strm);     // 结束压缩
             break;
         default:
             break;
@@ -50,21 +55,23 @@ public:
     }
 
 protected:
+    // 流模式枚举
     enum mode_t {
-        DECODE,
-        ENCODE,
-        WAIT,
-        COPY
+        DECODE,  // 解码模式
+        ENCODE,  // 编码模式
+        WAIT,    // 等待模式
+        COPY     // 复制模式
     } mode;
 
+    // 构造函数，初始化流
     gz_strm(mode_t mode, stream_ptr &&base) :
         out_stream(std::move(base)), mode(mode), strm{}, outbuf{0} {
         switch(mode) {
         case DECODE:
-            inflateInit2(&strm, 15 | 16);
+            inflateInit2(&strm, 15 | 16);  // 初始化gzip解压缩
             break;
         case ENCODE:
-            deflateInit2(&strm, 9, Z_DEFLATED, 15 | 16, 8, Z_DEFAULT_STRATEGY);
+            deflateInit2(&strm, 9, Z_DEFLATED, 15 | 16, 8, Z_DEFAULT_STRATEGY);  // 初始化gzip压缩
             break;
         default:
             break;
@@ -72,9 +79,10 @@ protected:
     }
 
 private:
-    z_stream strm;
-    uint8_t outbuf[CHUNK];
+    z_stream strm;           // zlib流结构
+    uint8_t outbuf[CHUNK];   // 输出缓冲区
 
+    // 执行写入操作
     bool do_write(const void *buf, size_t len, int flush) {
         if (mode == WAIT) {
             if (len == 0) return true;
@@ -98,15 +106,15 @@ private:
             strm.avail_out = sizeof(outbuf);
             switch(mode) {
                 case DECODE:
-                    code = inflate(&strm, flush);
+                    code = inflate(&strm, flush);    // 执行解压缩
                     break;
                 case ENCODE:
-                    code = deflate(&strm, flush);
+                    code = deflate(&strm, flush);    // 执行压缩
                     break;
                 case COPY:
-                    return true;
+                    return true;                     // 直接复制模式
                 default:
-                    // should have been handled
+                    // 不应该到达这里
                     return false;
             }
             if (code == Z_STREAM_ERROR) {
@@ -118,25 +126,24 @@ private:
             if (mode == DECODE && code == Z_STREAM_END) {
                 if (strm.avail_in > 1) {
                     if (strm.next_in[0] == 0x1f && strm.next_in[1] == 0x8b) {
-                        // There is still data in the stream, we need to reset the stream
-                        // and continue decoding
+                        // 流中还有数据，需要重置流并继续解码
                         inflateReset(&strm);
                         strm.avail_out = 0;
                         continue;
                     }
                 } else if (strm.avail_in == 1) {
                     if (strm.next_in[0] == 0x1f) {
-                        // If there is only one byte left, we need to wait for the next byte
-                        // to determine if it is a gzip header
+                        // 如果只剩一个字节，需要等待下一个字节
+                        // 来确定是否为gzip头部
                         mode = WAIT;
                         return true;
                     }
                 } else {
-                    // The next inflate won't consume any data but fallback
-                    // to the previous two conditions
+                    // 下一次inflate不会消耗任何数据，但会回退
+                    // 到前面两个条件
                     return true;
                 }
-                // There is still data in the stream, we need to copy it
+                // 流中还有数据，需要复制它
                 mode = COPY;
                 return true;
             }
@@ -145,16 +152,19 @@ private:
     }
 };
 
+// gzip解码器类
 class gz_decoder : public gz_strm {
 public:
     explicit gz_decoder(stream_ptr &&base) : gz_strm(DECODE, std::move(base)) {};
 };
 
+// gzip编码器类
 class gz_encoder : public gz_strm {
 public:
     explicit gz_encoder(stream_ptr &&base) : gz_strm(ENCODE, std::move(base)) {};
 };
 
+// Zopfli编码器类（高压缩比的gzip兼容压缩器）
 class zopfli_encoder : public chunk_out_stream {
 public:
     explicit zopfli_encoder(stream_ptr &&base) :
@@ -162,10 +172,11 @@ public:
         zo{}, out(nullptr), outsize(0), crc(crc32_z(0L, Z_NULL, 0)), in_total(0), bp(0) {
         ZopfliInitOptions(&zo);
 
-        // This config is already better than gzip -9
+        // 这个配置已经比gzip -9更好
         zo.numiterations = 1;
         zo.blocksplitting = 0;
 
+        // 写入gzip头部
         ZOPFLI_APPEND_DATA(31, &out, &outsize);  /* ID1 */
         ZOPFLI_APPEND_DATA(139, &out, &outsize); /* ID2 */
         ZOPFLI_APPEND_DATA(8, &out, &outsize);   /* CM */
@@ -176,43 +187,46 @@ public:
         ZOPFLI_APPEND_DATA(0, &out, &outsize);
         ZOPFLI_APPEND_DATA(0, &out, &outsize);
 
-        ZOPFLI_APPEND_DATA(2, &out, &outsize);  /* XFL, 2 indicates best compression. */
-        ZOPFLI_APPEND_DATA(3, &out, &outsize);  /* OS follows Unix conventions. */
+        ZOPFLI_APPEND_DATA(2, &out, &outsize);  /* XFL, 2表示最佳压缩 */
+        ZOPFLI_APPEND_DATA(3, &out, &outsize);  /* OS遵循Unix约定 */
     }
 
+    // 析构函数，完成压缩并写入CRC和文件大小
     ~zopfli_encoder() override {
         finalize();
 
-        /* CRC */
+        /* CRC校验和 */
         ZOPFLI_APPEND_DATA(crc % 256, &out, &outsize);
         ZOPFLI_APPEND_DATA((crc >> 8) % 256, &out, &outsize);
         ZOPFLI_APPEND_DATA((crc >> 16) % 256, &out, &outsize);
         ZOPFLI_APPEND_DATA((crc >> 24) % 256, &out, &outsize);
 
-        /* ISIZE */
+        /* ISIZE 原始数据大小 */
         ZOPFLI_APPEND_DATA(in_total % 256, &out, &outsize);
         ZOPFLI_APPEND_DATA((in_total >> 8) % 256, &out, &outsize);
         ZOPFLI_APPEND_DATA((in_total >> 16) % 256, &out, &outsize);
         ZOPFLI_APPEND_DATA((in_total >> 24) % 256, &out, &outsize);
 
-        bwrite(out, outsize);
-        free(out);
+        bwrite(out, outsize);  // 写入最终数据
+        free(out);             // 释放内存
     }
 
 protected:
+    // 写入数据块的实现
     bool write_chunk(const void *buf, size_t len, bool final) override {
         if (len == 0)
             return true;
 
         auto in = static_cast<const unsigned char *>(buf);
 
-        in_total += len;
-        crc = crc32_z(crc, in, len);
+        in_total += len;                    // 累计输入大小
+        crc = crc32_z(crc, in, len);       // 更新CRC校验和
 
+        // 使用Zopfli压缩数据
         ZopfliDeflatePart(&zo, 2, final, in, 0, len, &bp, &out, &outsize);
 
-        // ZOPFLI_APPEND_DATA is extremely dumb, so we always preserve the
-        // last byte to make sure that realloc is used instead of malloc
+        // ZOPFLI_APPEND_DATA非常简单，所以我们总是保留最后一个字节
+        // 以确保使用realloc而不是malloc
         if (!bwrite(out, outsize - 1))
             return false;
         out[0] = out[outsize - 1];
@@ -222,54 +236,59 @@ protected:
     }
 
 private:
-    ZopfliOptions zo;
-    unsigned char *out;
-    size_t outsize;
-    unsigned long crc;
-    uint32_t in_total;
-    unsigned char bp;
+    ZopfliOptions zo;      // Zopfli选项
+    unsigned char *out;    // 输出缓冲区
+    size_t outsize;        // 输出大小
+    unsigned long crc;     // CRC校验和
+    uint32_t in_total;     // 输入总大小
+    unsigned char bp;      // 位位置
 };
 
+// bzip2流处理类
 class bz_strm : public out_stream {
 public:
     bool write(const void *buf, size_t len) override {
         return len == 0 || do_write(buf, len, BZ_RUN);
     }
 
+    // 析构函数，完成压缩/解压缩
     ~bz_strm() override {
         switch(mode) {
             case DECODE:
-                BZ2_bzDecompressEnd(&strm);
+                BZ2_bzDecompressEnd(&strm);   // 结束解压缩
                 break;
             case ENCODE:
-                do_write(nullptr, 0, BZ_FINISH);
-                BZ2_bzCompressEnd(&strm);
+                do_write(nullptr, 0, BZ_FINISH);  // 完成压缩
+                BZ2_bzCompressEnd(&strm);     // 结束压缩
                 break;
         }
     }
 
 protected:
+    // bzip2模式枚举
     enum mode_t {
-        DECODE,
-        ENCODE
+        DECODE,  // 解码模式
+        ENCODE   // 编码模式
     } mode;
 
+    // 构造函数，初始化bzip2流
     bz_strm(mode_t mode, stream_ptr &&base) :
         out_stream(std::move(base)), mode(mode), strm{}, outbuf{0} {
         switch(mode) {
         case DECODE:
-            BZ2_bzDecompressInit(&strm, 0, 0);
+            BZ2_bzDecompressInit(&strm, 0, 0);  // 初始化bzip2解压缩
             break;
         case ENCODE:
-            BZ2_bzCompressInit(&strm, 9, 0, 0);
+            BZ2_bzCompressInit(&strm, 9, 0, 0);  // 初始化bzip2压缩（级别9）
             break;
         }
     }
 
 private:
-    bz_stream strm;
-    char outbuf[CHUNK];
+    bz_stream strm;        // bzip2流结构
+    char outbuf[CHUNK];    // 输出缓冲区
 
+    // 执行写入操作
     bool do_write(const void *buf, size_t len, int flush) {
         strm.next_in = (char *) buf;
         strm.avail_in = len;
@@ -279,10 +298,10 @@ private:
             strm.next_out = outbuf;
             switch(mode) {
             case DECODE:
-                code = BZ2_bzDecompress(&strm);
+                code = BZ2_bzDecompress(&strm);    // 执行解压缩
                 break;
             case ENCODE:
-                code = BZ2_bzCompress(&strm, flush);
+                code = BZ2_bzCompress(&strm, flush);  // 执行压缩
                 break;
             }
             if (code < 0) {
@@ -296,40 +315,46 @@ private:
     }
 };
 
+// bzip2解码器类
 class bz_decoder : public bz_strm {
 public:
     explicit bz_decoder(stream_ptr &&base) : bz_strm(DECODE, std::move(base)) {};
 };
 
+// bzip2编码器类
 class bz_encoder : public bz_strm {
 public:
     explicit bz_encoder(stream_ptr &&base) : bz_strm(ENCODE, std::move(base)) {};
 };
 
+// LZMA/XZ流处理类
 class lzma_strm : public out_stream {
 public:
     bool write(const void *buf, size_t len) override {
         return len == 0 || do_write(buf, len, LZMA_RUN);
     }
 
+    // 析构函数，完成压缩/解压缩
     ~lzma_strm() override {
-        do_write(nullptr, 0, LZMA_FINISH);
-        lzma_end(&strm);
+        do_write(nullptr, 0, LZMA_FINISH);  // 完成操作
+        lzma_end(&strm);                    // 结束LZMA流
     }
 
 protected:
+    // LZMA模式枚举
     enum mode_t {
-        DECODE,
-        ENCODE_XZ,
-        ENCODE_LZMA
+        DECODE,      // 解码模式
+        ENCODE_XZ,   // XZ编码模式
+        ENCODE_LZMA  // LZMA编码模式
     } mode;
 
+    // 构造函数，初始化LZMA流
     lzma_strm(mode_t mode, stream_ptr &&base) :
         out_stream(std::move(base)), mode(mode), strm(LZMA_STREAM_INIT), outbuf{0} {
         lzma_options_lzma opt;
 
-        // Initialize preset
-        lzma_lzma_preset(&opt, 9);
+        // 初始化预设
+        lzma_lzma_preset(&opt, 9);  // 使用最高压缩级别
         lzma_filter filters[] = {
             { .id = LZMA_FILTER_LZMA2, .options = &opt },
             { .id = LZMA_VLI_UNKNOWN, .options = nullptr },
@@ -338,13 +363,13 @@ protected:
         lzma_ret code;
         switch(mode) {
         case DECODE:
-            code = lzma_auto_decoder(&strm, UINT64_MAX, 0);
+            code = lzma_auto_decoder(&strm, UINT64_MAX, 0);  // 自动检测格式并解码
             break;
         case ENCODE_XZ:
-            code = lzma_stream_encoder(&strm, filters, LZMA_CHECK_CRC32);
+            code = lzma_stream_encoder(&strm, filters, LZMA_CHECK_CRC32);  // XZ格式编码
             break;
         case ENCODE_LZMA:
-            code = lzma_alone_encoder(&strm, &opt);
+            code = lzma_alone_encoder(&strm, &opt);  // LZMA格式编码
             break;
         }
         if (code != LZMA_OK) {
@@ -353,16 +378,17 @@ protected:
     }
 
 private:
-    lzma_stream strm;
-    uint8_t outbuf[CHUNK];
+    lzma_stream strm;       // LZMA流结构
+    uint8_t outbuf[CHUNK];  // 输出缓冲区
 
+    // 执行写入操作
     bool do_write(const void *buf, size_t len, lzma_action flush) {
         strm.next_in = (uint8_t *) buf;
         strm.avail_in = len;
         do {
             strm.avail_out = sizeof(outbuf);
             strm.next_out = outbuf;
-            int code = lzma_code(&strm, flush);
+            int code = lzma_code(&strm, flush);  // 执行LZMA操作
             if (code != LZMA_OK && code != LZMA_STREAM_END) {
                 LOGW("LZMA %s failed (%d)\n", mode ? "encode" : "decode", code);
                 return false;
@@ -374,47 +400,53 @@ private:
     }
 };
 
+// LZMA解码器类
 class lzma_decoder : public lzma_strm {
 public:
     explicit lzma_decoder(stream_ptr &&base) : lzma_strm(DECODE, std::move(base)) {}
 };
 
+// XZ编码器类
 class xz_encoder : public lzma_strm {
 public:
     explicit xz_encoder(stream_ptr &&base) : lzma_strm(ENCODE_XZ, std::move(base)) {}
 };
 
+// LZMA编码器类
 class lzma_encoder : public lzma_strm {
 public:
     explicit lzma_encoder(stream_ptr &&base) : lzma_strm(ENCODE_LZMA, std::move(base)) {}
 };
 
+// LZ4F解码器类
 class LZ4F_decoder : public out_stream {
 public:
     explicit LZ4F_decoder(stream_ptr &&base) :
         out_stream(std::move(base)), ctx(nullptr), outbuf(nullptr), outCapacity(0) {
-        LZ4F_createDecompressionContext(&ctx, LZ4F_VERSION);
+        LZ4F_createDecompressionContext(&ctx, LZ4F_VERSION);  // 创建LZ4F解压缩上下文
     }
 
+    // 析构函数，清理资源
     ~LZ4F_decoder() override {
-        LZ4F_freeDecompressionContext(ctx);
-        delete[] outbuf;
+        LZ4F_freeDecompressionContext(ctx);  // 释放解压缩上下文
+        delete[] outbuf;                     // 释放输出缓冲区
     }
 
     bool write(const void *buf, size_t len) override {
         auto in = reinterpret_cast<const uint8_t *>(buf);
         if (!outbuf) {
+            // 首次调用，需要获取帧信息并分配缓冲区
             size_t read = len;
             LZ4F_frameInfo_t info;
             LZ4F_getFrameInfo(ctx, &info, in, &read);
             switch (info.blockSizeID) {
             case LZ4F_default:
-            case LZ4F_max64KB:  outCapacity = 1 << 16; break;
-            case LZ4F_max256KB: outCapacity = 1 << 18; break;
-            case LZ4F_max1MB:   outCapacity = 1 << 20; break;
-            case LZ4F_max4MB:   outCapacity = 1 << 22; break;
+            case LZ4F_max64KB:  outCapacity = 1 << 16; break;   // 64KB
+            case LZ4F_max256KB: outCapacity = 1 << 18; break;   // 256KB
+            case LZ4F_max1MB:   outCapacity = 1 << 20; break;   // 1MB
+            case LZ4F_max4MB:   outCapacity = 1 << 22; break;   // 4MB
             }
-            outbuf = new uint8_t[outCapacity];
+            outbuf = new uint8_t[outCapacity];  // 分配输出缓冲区
             in += read;
             len -= read;
         }
@@ -423,6 +455,7 @@ public:
         do {
             read = len;
             write = outCapacity;
+            // 执行LZ4F解压缩
             code = LZ4F_decompress(ctx, outbuf, &write, in, &read, nullptr);
             if (LZ4F_isError(code)) {
                 LOGW("LZ4F decode error: %s\n", LZ4F_getErrorName(code));
@@ -437,33 +470,35 @@ public:
     }
 
 private:
-    LZ4F_decompressionContext_t ctx;
-    uint8_t *outbuf;
-    size_t outCapacity;
+    LZ4F_decompressionContext_t ctx;  // LZ4F解压缩上下文
+    uint8_t *outbuf;                  // 输出缓冲区
+    size_t outCapacity;               // 输出缓冲区容量
 };
 
+// LZ4F编码器类
 class LZ4F_encoder : public out_stream {
 public:
     explicit LZ4F_encoder(stream_ptr &&base) :
         out_stream(std::move(base)), ctx(nullptr), out_buf(nullptr), outCapacity(0) {
-        LZ4F_createCompressionContext(&ctx, LZ4F_VERSION);
+        LZ4F_createCompressionContext(&ctx, LZ4F_VERSION);  // 创建LZ4F压缩上下文
     }
 
     bool write(const void *buf, size_t len) override {
         if (!out_buf) {
+            // 首次调用，初始化压缩参数并分配缓冲区
             LZ4F_preferences_t prefs {
                 .frameInfo = {
-                    .blockSizeID = LZ4F_max4MB,
-                    .blockMode = LZ4F_blockIndependent,
-                    .contentChecksumFlag = LZ4F_contentChecksumEnabled,
-                    .blockChecksumFlag = LZ4F_noBlockChecksum,
+                    .blockSizeID = LZ4F_max4MB,                    // 最大4MB块
+                    .blockMode = LZ4F_blockIndependent,            // 独立块模式
+                    .contentChecksumFlag = LZ4F_contentChecksumEnabled,  // 启用内容校验和
+                    .blockChecksumFlag = LZ4F_noBlockChecksum,     // 不使用块校验和
                 },
-                .compressionLevel = 9,
-                .autoFlush = 1,
+                .compressionLevel = 9,  // 最高压缩级别
+                .autoFlush = 1,         // 自动刷新
             };
-            outCapacity = LZ4F_compressBound(BLOCK_SZ, &prefs);
-            out_buf = new uint8_t[outCapacity];
-            size_t write = LZ4F_compressBegin(ctx, out_buf, outCapacity, &prefs);
+            outCapacity = LZ4F_compressBound(BLOCK_SZ, &prefs);  // 计算输出缓冲区大小
+            out_buf = new uint8_t[outCapacity];                  // 分配输出缓冲区
+            size_t write = LZ4F_compressBegin(ctx, out_buf, outCapacity, &prefs);  // 开始压缩
             if (!bwrite(out_buf, write))
                 return false;
         }
@@ -473,7 +508,8 @@ public:
         auto in = reinterpret_cast<const uint8_t *>(buf);
         size_t read, write;
         do {
-            read = len > BLOCK_SZ ? BLOCK_SZ : len;
+            read = len > BLOCK_SZ ? BLOCK_SZ : len;  // 确定读取大小
+            // 压缩数据块
             write = LZ4F_compressUpdate(ctx, out_buf, outCapacity, in, read, nullptr);
             if (LZ4F_isError(write)) {
                 LOGW("LZ4F encode error: %s\n", LZ4F_getErrorName(write));
@@ -487,56 +523,62 @@ public:
         return true;
     }
 
+    // 析构函数，完成压缩并清理资源
     ~LZ4F_encoder() override {
-        size_t len = LZ4F_compressEnd(ctx, out_buf, outCapacity, nullptr);
+        size_t len = LZ4F_compressEnd(ctx, out_buf, outCapacity, nullptr);  // 结束压缩
         if (LZ4F_isError(len)) {
             LOGE("LZ4F end of frame error: %s\n", LZ4F_getErrorName(len));
         } else if (!bwrite(out_buf, len)) {
             LOGE("LZ4F end of frame error: I/O error\n");
         }
-        LZ4F_freeCompressionContext(ctx);
-        delete[] out_buf;
+        LZ4F_freeCompressionContext(ctx);  // 释放压缩上下文
+        delete[] out_buf;                  // 释放输出缓冲区
     }
 
 private:
-    LZ4F_compressionContext_t ctx;
-    uint8_t *out_buf;
-    size_t outCapacity;
+    LZ4F_compressionContext_t ctx;  // LZ4F压缩上下文
+    uint8_t *out_buf;               // 输出缓冲区
+    size_t outCapacity;             // 输出缓冲区容量
 
-    static constexpr size_t BLOCK_SZ = 1 << 22;
+    static constexpr size_t BLOCK_SZ = 1 << 22;  // 4MB块大小
 };
 
+// LZ4遗留格式解码器类
 class LZ4_decoder : public chunk_out_stream {
 public:
     explicit LZ4_decoder(stream_ptr &&base) :
         chunk_out_stream(std::move(base), LZ4_COMPRESSED, sizeof(block_sz)),
         out_buf(new char[LZ4_UNCOMPRESSED]), block_sz(0) {}
 
+    // 析构函数，完成解码并清理资源
     ~LZ4_decoder() override {
         finalize();
         delete[] out_buf;
     }
 
 protected:
+    // 写入数据块的实现
     bool write_chunk(const void *buf, size_t len, bool final) override {
-        // This is an error
+        // 长度不匹配是错误
         if (len != chunk_sz)
             return false;
 
         auto in = reinterpret_cast<const char *>(buf);
 
         if (block_sz == 0) {
+            // 读取块大小
             memcpy(&block_sz, in, sizeof(block_sz));
             if (block_sz == 0x184C2102) {
-                // This is actually the lz4 magic, read the next 4 bytes
+                // 这实际上是lz4 magic，读取下4个字节
                 block_sz = 0;
                 chunk_sz = sizeof(block_sz);
                 return true;
             }
-            // Read the next block chunk
+            // 读取下一个数据块
             chunk_sz = block_sz;
             return true;
         } else {
+            // 执行LZ4解压缩
             int r = LZ4_decompress_safe(in, out_buf, block_sz, LZ4_UNCOMPRESSED);
             chunk_sz = sizeof(block_sz);
             block_sz = 0;
@@ -549,28 +591,32 @@ protected:
     }
 
 private:
-    char *out_buf;
-    uint32_t block_sz;
+    char *out_buf;      // 输出缓冲区
+    uint32_t block_sz;  // 块大小
 };
 
+// LZ4编码器类
 class LZ4_encoder : public chunk_out_stream {
 public:
     explicit LZ4_encoder(stream_ptr &&base, bool lg) :
         chunk_out_stream(std::move(base), LZ4_UNCOMPRESSED),
         out_buf(new char[LZ4_COMPRESSED]), lg(lg), in_total(0) {
-        bwrite("\x02\x21\x4c\x18", 4);
+        bwrite("\x02\x21\x4c\x18", 4);  // 写入LZ4魔数
     }
 
+    // 析构函数，完成编码并清理资源
     ~LZ4_encoder() override {
         finalize();
         if (lg)
-            bwrite(&in_total, sizeof(in_total));
+            bwrite(&in_total, sizeof(in_total));  // LG格式需要写入总大小
         delete[] out_buf;
     }
 
 protected:
+    // 写入数据块的实现
     bool write_chunk(const void *buf, size_t len, bool final) override {
         auto in = static_cast<const char *>(buf);
+        // 使用LZ4HC高压缩比压缩数据
         uint32_t block_sz = LZ4_compress_HC(in, out_buf, len, LZ4_COMPRESSED, LZ4HC_CLEVEL_MAX);
         if (block_sz == 0) {
             LOGW("LZ4HC compression failure\n");
@@ -584,11 +630,12 @@ protected:
     }
 
 private:
-    char *out_buf;
-    bool lg;
-    uint32_t in_total;
+    char *out_buf;      // 输出缓冲区
+    bool lg;            // 是否为LG格式
+    uint32_t in_total;  // 输入总大小
 };
 
+// 获取编码器的工厂函数
 filter_strm_ptr get_encoder(format_t type, stream_ptr &&base) {
     switch (type) {
         case XZ:
@@ -611,6 +658,7 @@ filter_strm_ptr get_encoder(format_t type, stream_ptr &&base) {
     }
 }
 
+// 获取解码器的工厂函数
 filter_strm_ptr get_decoder(format_t type, stream_ptr &&base) {
     switch (type) {
         case XZ:
@@ -630,9 +678,10 @@ filter_strm_ptr get_decoder(format_t type, stream_ptr &&base) {
     }
 }
 
+// 解压缩函数
 void decompress(char *infile, const char *outfile) {
-    bool in_std = infile == "-"sv;
-    bool rm_in = false;
+    bool in_std = infile == "-"sv;  // 是否从标准输入读取
+    bool rm_in = false;             // 是否删除输入文件
 
     FILE *in_fp = in_std ? stdin : xfopen(infile, "re");
     stream_ptr strm;
@@ -641,6 +690,7 @@ void decompress(char *infile, const char *outfile) {
     size_t len;
     while ((len = fread(buf, 1, sizeof(buf), in_fp))) {
         if (!strm) {
+            // 检测压缩格式
             format_t type = check_fmt(buf, len);
 
             fprintf(stderr, "Detected format: [%s]\n", fmt2name[type]);
@@ -648,9 +698,9 @@ void decompress(char *infile, const char *outfile) {
             if (!COMPRESSED(type))
                 LOGE("Input file is not a supported compressed type!\n");
 
-            /* If user does not provide outfile, infile has to be either
-            * <path>.[ext], or '-'. Outfile will be either <path> or '-'.
-            * If the input does not have proper format, abort */
+            /* 如果用户未提供输出文件，输入文件必须是
+            * <path>.[ext]或'-'格式。输出文件将是<path>或'-'。
+            * 如果输入格式不正确，则中止 */
 
             char *ext = nullptr;
             if (outfile == nullptr) {
@@ -660,7 +710,7 @@ void decompress(char *infile, const char *outfile) {
                     if (ext == nullptr || strcmp(ext, fmt2ext[type]) != 0)
                         LOGE("Input file is not a supported type!\n");
 
-                    // Strip out extension and remove input
+                    // 去掉扩展名并删除输入文件
                     *ext = '\0';
                     rm_in = true;
                     fprintf(stderr, "Decompressing to [%s]\n", outfile);
@@ -675,30 +725,31 @@ void decompress(char *infile, const char *outfile) {
             LOGE("Decompression error!\n");
     }
 
-    strm.reset(nullptr);
+    strm.reset(nullptr);  // 重置流指针
     fclose(in_fp);
 
     if (rm_in)
-        unlink(infile);
+        unlink(infile);   // 删除输入文件
 }
 
+// 压缩函数
 void compress(const char *method, const char *infile, const char *outfile) {
-    format_t fmt = name2fmt[method];
+    format_t fmt = name2fmt[method];  // 根据方法名获取格式
     if (fmt == UNKNOWN)
         LOGE("Unknown compression method: [%s]\n", method);
 
-    bool in_std = infile == "-"sv;
-    bool rm_in = false;
+    bool in_std = infile == "-"sv;  // 是否从标准输入读取
+    bool rm_in = false;             // 是否删除输入文件
 
     FILE *in_fp = in_std ? stdin : xfopen(infile, "re");
     FILE *out_fp;
 
     if (outfile == nullptr) {
         if (in_std) {
-            out_fp = stdout;
+            out_fp = stdout;  // 输出到标准输出
         } else {
-            /* If user does not provide outfile and infile is not
-             * STDIN, output to <infile>.[ext] */
+            /* 如果用户未提供输出文件且输入文件不是标准输入，
+             * 输出到<infile>.[ext] */
             string tmp(infile);
             tmp += fmt2ext[fmt];
             out_fp = xfopen(tmp.data(), "we");
@@ -718,9 +769,9 @@ void compress(const char *method, const char *infile, const char *outfile) {
             LOGE("Compression error!\n");
     }
 
-    strm.reset(nullptr);
+    strm.reset(nullptr);  // 重置流指针
     fclose(in_fp);
 
     if (rm_in)
-        unlink(infile);
+        unlink(infile);   // 删除输入文件
 }

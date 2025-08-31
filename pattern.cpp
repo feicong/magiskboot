@@ -1,9 +1,11 @@
+// 模式匹配和移除实现
 #include <base.hpp>
 
 #include "magiskboot.hpp"
 
 #define MATCH(p) else if (strncmp(s + skip, p, sizeof(p) - 1) == 0) skip += (sizeof(p) - 1)
 
+// 跳过验证模式
 static int skip_verity_pattern(const char *s) {
     int skip = s[0] == ',';
 
@@ -23,6 +25,7 @@ static int skip_verity_pattern(const char *s) {
     return skip;
 }
 
+// 跳过加密模式
 static int skip_encryption_pattern(const char *s) {
     int skip = s[0] == ',';
 
@@ -39,6 +42,7 @@ static int skip_encryption_pattern(const char *s) {
     return skip;
 }
 
+// 移除匹配模式的通用函数
 static uint32_t remove_pattern(char *src, uint32_t size, int(*pattern_skip)(const char *)) {
     int orig_sz = size;
     int write = 0;
@@ -51,10 +55,11 @@ static uint32_t remove_pattern(char *src, uint32_t size, int(*pattern_skip)(cons
             src[write++] = src[read++];
         }
     }
-    memset(src + write, 0, orig_sz - write);
+    memset(src + write, 0, orig_sz - write);  // 清零剩余空间
     return size;
 }
 
+// 修补验证相关的模式
 uint32_t patch_verity(void *buf, uint32_t size) {
     return remove_pattern(static_cast<char *>(buf), size, skip_verity_pattern);
 }

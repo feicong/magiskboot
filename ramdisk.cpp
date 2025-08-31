@@ -1,3 +1,4 @@
+// Ramdisk处理和Magisk修补实现
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h> // For R_OK, access
@@ -10,28 +11,33 @@
 
 using namespace std;
 
+// 不支持的文件列表
 static const char *UNSUPPORT_LIST[] =
         { "sbin/launch_daemonsu.sh", "sbin/su", "init.xposed.rc",
           "boot/sbin/launch_daemonsu.sh" };
 
+// Magisk相关文件列表
 static const char *MAGISK_LIST[] =
         { ".backup/.magisk", "init.magisk.rc",
           "overlay/init.magisk.rc" };
 
+// Magisk CPIO类
 class magisk_cpio : public cpio {
 public:
-    void patch();
-    int test();
-    char *sha1();
-    void restore();
-    void backup(const char *orig);
+    void patch();       // 修补
+    int test();         // 测试
+    char *sha1();       // 计算SHA1
+    void restore();     // 恢复
+    void backup(const char *orig);  // 备份
 };
 
+// 检查环境变量
 bool check_env(const char *name) {
     const char *val = getenv(name);
     return val != nullptr && val == "true"sv;
 }
 
+// Magisk修补函数
 void magisk_cpio::patch() {
     bool keepverity = check_env("KEEPVERITY");
     bool keepforceencrypt = check_env("KEEPFORCEENCRYPT");
@@ -63,10 +69,12 @@ void magisk_cpio::patch() {
     }
 }
 
-#define MAGISK_PATCHED    (1 << 0)
-#define UNSUPPORTED_CPIO  (1 << 1)
-#define SONY_INIT         (1 << 2)
+// Magisk状态标记定义
+#define MAGISK_PATCHED    (1 << 0)    // 已修补
+#define UNSUPPORTED_CPIO  (1 << 1)    // 不支持的CPIO
+#define SONY_INIT         (1 << 2)    // Sony初始化
 
+// 测试Magisk状态
 int magisk_cpio::test() {
     int ret = 0;
     for (auto file : UNSUPPORT_LIST) {
@@ -88,6 +96,7 @@ int magisk_cpio::test() {
 #define for_each_line(line, buf, size) \
 for (char *line = (char *) buf; line < (char *) buf + size && line[0]; line = strchr(line + 1, '\n') + 1)
 
+// 计算SHA1值
 char *magisk_cpio::sha1() {
     char sha1[41];
     for (auto &e : entries) {
@@ -118,7 +127,7 @@ char *magisk_cpio::sha1() {
 for (char *str = (char *) buf; str < (char *) buf + size; str += strlen(str) + 1)
 
 void magisk_cpio::restore() {
-    // Collect files
+    // 收集文件
     auto bk = entries.end();
     auto rl = entries.end();
     auto mg = entries.end();
@@ -135,15 +144,15 @@ void magisk_cpio::restore() {
         }
     }
 
-    // If the .backup folder is effectively empty, this means that the boot ramdisk was
-    // created from scratch by an old broken magiskboot. This is just a hacky workaround.
+    // 如果.backup文件夹实际上是空的，这意味着boot ramdisk是由旧的损坏的magiskboot从头创建的
+    // 这只是一个临时的解决方案
     if (bk != entries.end() && mg != entries.end() && rl == entries.end() && backups.empty()) {
         fprintf(stderr, "Remove all in ramdisk\n");
         entries.clear();
         return;
     }
 
-    // Remove files
+    // 删除文件
     rm(bk);
     rm(mg);
     if (rl != entries.end()) {
@@ -153,13 +162,14 @@ void magisk_cpio::restore() {
         rm(rl);
     }
 
-    // Restore files
+    // 恢复文件
     for (auto it : backups) {
         const char *name = &it->first[8];
         mv(it, name);
     }
 }
 
+// 备份原始文件
 void magisk_cpio::backup(const char *orig) {
     entry_map backups;
     string rm_list;
@@ -188,18 +198,18 @@ void magisk_cpio::backup(const char *orig) {
         }
 
         if (res < 0) {
-            // Something is missing in new ramdisk, do_backup!
+            // 新ramdisk中缺少某些内容，需要备份！
             do_backup = true;
             fprintf(stderr, "Backup missing entry: ");
         } else if (res == 0) {
             if (lhs->second->filesize != rhs->second->filesize ||
                 memcmp(lhs->second->data, rhs->second->data, lhs->second->filesize) != 0) {
-                // Not the same!
+                // 不相同！
                 do_backup = true;
                 fprintf(stderr, "Backup mismatch entry: ");
             }
         } else {
-            // Something new in ramdisk
+            // ramdisk中有新内容
             rm_list += rhs->first;
             rm_list += (char) '\0';
             fprintf(stderr, "Record new entry: [%s] -> [.backup/.rmlist]\n", rhs->first.data());
@@ -212,7 +222,7 @@ void magisk_cpio::backup(const char *orig) {
             backups.emplace(name, e);
         }
 
-        // Increment positions
+        // 递增位置
         if (res < 0) {
             ++lhs;
         } else if (res == 0) {
@@ -234,10 +244,11 @@ void magisk_cpio::backup(const char *orig) {
         entries.merge(backups);
 }
 
+// CPIO命令处理函数
 int cpio_commands(int argc, char *argv[]) {
     magisk_cpio cpio;
 
-    /* pack doesn`t need incpio */
+    /* pack不需要incpio */
     if (argc >= 3 && argv[0] == "pack"sv) {
         bool c = argc == 5 && argv[1] == "-c"sv;
         cpio.load_cpio(argv[1 + 2*c], c ? argv[2] : "cpio", false);
@@ -272,6 +283,7 @@ int cpio_commands(int argc, char *argv[]) {
         if (cmdc == 0)
             continue;
 
+        // 处理各种CPIO命令
         if (cmdv[0] == "test"sv) {
             exit(cpio.test());
         } else if (cmdv[0] == "restore"sv) {
